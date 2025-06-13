@@ -26,6 +26,12 @@ struct Plant {
     Color primaryColor;
     Color secondaryColor;
     int size;
+    
+    // Growth parameters
+    float tipAngleVariance = 0.15f; // radians
+    float branchingAngle = 0.6f;
+    float branchAngleVariance = 0.05f;
+    float branchProbability = 0.33f;
 };
 
 Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float length, float thickness, Color color, int parentIndex, const Particle* parent, bool isGrowingTip) {
@@ -36,7 +42,7 @@ Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float lengt
     bd.position = b2Vec2{pos.x, pos.y};
     bd.rotation = b2MakeRot(-PI/2);
 
-    b2Capsule capsule = {b2Vec2{0, 0}, b2Vec2{length,0}, thickness};
+    b2Capsule capsule = {b2Vec2{0, 0}, b2Vec2{length,0}, thickness/2};
 
     // Create a box fixture representing the anisotropic segment (capsule approx)
     b2BodyId bodyId = b2CreateBody(worldId, &bd);
@@ -47,11 +53,12 @@ Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float lengt
         b2RevoluteJointDef jointDef = b2DefaultRevoluteJointDef();
         jointDef.bodyIdA = parent->bodyId;
         jointDef.bodyIdB = bodyId;
-        jointDef.localAnchorA = b2Vec2{pos.x, pos.y} - b2Body_GetPosition(parent->bodyId);
+        jointDef.localAnchorA = {parent->length,0};
         jointDef.localAnchorB = {0,0};
         jointDef.targetAngle = angle;
         jointDef.enableSpring = true;
-        jointDef.hertz = 10 + thickness;
+        jointDef.hertz = 30 + thickness*3;
+        jointDef.dampingRatio = 0.7f;
         jointDef.collideConnected = false;
         b2CreateRevoluteJoint(worldId, &jointDef);
     }
@@ -85,11 +92,6 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
         if (plant.particles.size() + newParticles.size() >= (size_t)plant.size) return; 
         Particle& p = plant.particles[i];
         if (!p.isGrowingTip) continue;
-
-        // Growth parameters
-        float tipAngleVariance = 0.15f; // radians
-        float branchAngleVariance = 0.25f;
-        float branchProbability = 0;//0.33f;
         
         float lerpStep = 0.5f*1/p.thickness; // How much to move toward secondary color
         Color newColor = ColorLerp(p.color, plant.secondaryColor, lerpStep);
@@ -102,7 +104,7 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
         Vector2 newPos = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center2));
 
         // Update current tip
-        float tipAngle = 0;//parentAngle + RandomFloat(-tipAngleVariance, tipAngleVariance);
+        float tipAngle = RandomFloat(-plant.tipAngleVariance, plant.tipAngleVariance);
         Particle newParticle = CreateParticle(worldId,
             newPos,
             tipAngle,
@@ -117,8 +119,8 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
         p.isGrowingTip = false;
 
         // Random lateral branch
-        if (RandomFloat(0.0f, 1.0f) < branchProbability) {
-            float branchAngle = parentAngle + RandomFloat(-branchAngleVariance, branchAngleVariance);
+        if (RandomFloat(0.0f, 1.0f) < plant.branchProbability) {
+            float branchAngle = (GetRandomValue(0, 1) ? 1 : -1)*plant.branchingAngle + RandomFloat(-plant.branchAngleVariance, plant.branchAngleVariance);
             Particle branch = CreateParticle(worldId,
                 parentPos,
                 branchAngle,
@@ -142,8 +144,8 @@ float HashFloat(int seed) {
 }
 
 void DrawPlant(const Plant& plant) {
-    const float lineBoilAmplitude = 15.0f;
-    const float lineBoilSpeed = 10.0f;
+    const float lineBoilAmplitude = 40.0f;
+    const float lineBoilSpeed = 5.0f;
     double time = GetTime();
 
     for (size_t i = 0; i < plant.particles.size(); i++) {
@@ -171,7 +173,7 @@ void DrawPlant(const Plant& plant) {
         Vector2 cppos = Vector2Add(center, Vector2Scale(perp, boilOffset));
 
         //DrawSplineSegmentBezierQuadratic(startpos, cppos, endpos, segmentCapsule.radius, p.color);
-        DrawSplineSegmentBezierQuadratic(base, cppos, tip, segmentCapsule.radius, p.color);
+        DrawSplineSegmentBezierQuadratic(base, cppos, tip, segmentCapsule.radius*2, p.color);
 
         // DEBUG
         DrawCircleLines(base.x, base.y, segmentCapsule.radius, RED);
@@ -251,16 +253,17 @@ int main() {
 
     //SetConfigFlags(FLAG_VSYNC_HINT);
     InitWindow(screenWidth, screenHeight, "2D Climbing Plant Growth (Raylib)");
-    SetTargetFPS(120);
+    SetTargetFPS(30);
+    float fixedDeltaTime = 1.0f/60;
 
 	// 128 pixels per meter is a appropriate for this scene.
-	float lengthUnitsPerMeter = 128.0f;
+	const float lengthUnitsPerMeter = 64.0f;
 	b2SetLengthUnitsPerMeter(lengthUnitsPerMeter);
 
 	b2WorldDef worldDef = b2DefaultWorldDef();
 
 	// Realistic gravity is achieved by multiplying gravity by the length unit.
-	worldDef.gravity.y = -9.8f * lengthUnitsPerMeter;
+	worldDef.gravity.y = 9.8f * lengthUnitsPerMeter;
 	b2WorldId worldId = b2CreateWorld(&worldDef);
 
     // Plant particle dragging
@@ -317,14 +320,14 @@ int main() {
         if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) && plants.size() < MAX_PLANTS) {
             Vector2 mouse = GetMousePosition();
             Plant plant;
-            plant.size = 4;//GetRandomValue(50, 200);
+            plant.size = GetRandomValue(10, 45);
             plant.primaryColor = GREEN;
             plant.secondaryColor = Color{0, 255, 234, 150};
             Particle seed = CreateParticle(worldId,
                 mouse,
                 -PI/2,
-                100,
-                5,
+                40,
+                10,
                 plant.primaryColor, // Start with plant’s base color
                 -1,
                 nullptr,
@@ -344,7 +347,7 @@ int main() {
 
         // Physics Update
         float deltaTime = GetFrameTime();
-        b2World_Step(worldId, deltaTime, 2);
+        b2World_Step(worldId, fixedDeltaTime, 5);
 
 
         // DRAW
