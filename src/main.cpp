@@ -1,5 +1,7 @@
 #include "raylib.h"
 #include "raymath.h"
+#define RAYGUI_IMPLEMENTATION
+#include "raygui.h"
 #include "box2d/box2d.h"
 
 #include <vector>
@@ -19,6 +21,7 @@ struct Particle {
     Color color;
     int parentIndex;
     bool isGrowingTip;
+    int level;
 };
 
 struct Plant {
@@ -57,11 +60,13 @@ Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float lengt
         jointDef.localAnchorB = {0,0};
         jointDef.targetAngle = angle;
         jointDef.enableSpring = true;
-        jointDef.hertz = 30 + thickness*3;
-        jointDef.dampingRatio = 0.7f;
+        jointDef.hertz = length * 2 + thickness * 10;
+        jointDef.dampingRatio = 0;//0.15f;
         jointDef.collideConnected = false;
         b2CreateRevoluteJoint(worldId, &jointDef);
     }
+
+    int level = (parentIndex != -1) ? parent->level + 1 : 0;
 
     Particle p = {
         bodyId,
@@ -69,7 +74,8 @@ Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float lengt
         thickness,
         color,
         parentIndex,
-        isGrowingTip
+        isGrowingTip,
+        level
     };
 
     return p;
@@ -108,8 +114,8 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
         Particle newParticle = CreateParticle(worldId,
             newPos,
             tipAngle,
-            p.length + RandomFloat(-0.1f, 0.1f), 
-            p.thickness * 0.98f, 
+            p.length * RandomFloat(0.9f, 1.1f), 
+            p.thickness * RandomFloat(0.85f,0.99f), 
             newColor, 
             (int)i,
             &p,
@@ -124,8 +130,8 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
             Particle branch = CreateParticle(worldId,
                 parentPos,
                 branchAngle,
-                p.length * 0.92f,
-                p.thickness * 0.85f,
+                p.length * RandomFloat(0.9f, 1.1f),
+                p.thickness * RandomFloat(0.75f,0.9f),
                 newColor,
                 (int)i,
                 &p,
@@ -143,9 +149,7 @@ float HashFloat(int seed) {
     return (1.0f - ((seed * (seed * seed * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f);
 }
 
-void DrawPlant(const Plant& plant) {
-    const float lineBoilAmplitude = 40.0f;
-    const float lineBoilSpeed = 5.0f;
+void DrawPlant(const Plant& plant, float lineBoilAmplitude=0.25, float lineBoilSpeed=2, float boilThicknessFactor=0.6, float baseOffset=0.05, float phaseScaling=0.667) {
     double time = GetTime();
 
     for (size_t i = 0; i < plant.particles.size(); i++) {
@@ -153,21 +157,22 @@ void DrawPlant(const Plant& plant) {
         b2ShapeId shapes[1];
         b2Body_GetShapes(p.bodyId, shapes, 1);
         b2Capsule segmentCapsule = b2Shape_GetCapsule(shapes[0]);
-        Vector2 base = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center1));
+        Vector2 base = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center1-b2Vec2{baseOffset*p.length,0}));
         Vector2 tip = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center2));
 
         // Use hash-based pseudo-random phase from particle index
-        float phase = HashFloat((int)(tip.x * 1000 + tip.y * 1000)) * 2 * PI;
+        double phase = (p.level) * PI/phaseScaling + HashFloat(b2StoreBodyId(plant.particles[0].bodyId))/4;
 
         //Vector2 startpos = Vector2Lerp(base, tip, sinf(time * 5 + phase + 1) * 0.1f - 0.1f);
         //Vector2 endpos = Vector2Lerp(base, tip, sinf(time * 5 + phase) * 0.1f + 0.9f);
 
         Vector2 center = Vector2Lerp(base, tip, 0.5f);
         float len = Vector2Length(Vector2Subtract(base, tip));
-        Vector2 perp = {-(base.x - tip.x) / len, (base.y - tip.y) / len};
+        Vector2 perp = {(base.y - tip.y) / len, -(base.x - tip.x) / len};
 
-        float boilAmplitude = std::min(lineBoilAmplitude/p.thickness, lineBoilAmplitude);
-        float boilSpeed = std::min(lineBoilSpeed/(p.thickness*1.5f), lineBoilSpeed);
+        float thickFactor = Clamp((plant.particles[0].thickness-p.thickness)/(boilThicknessFactor*plant.particles[0].thickness), 0, 1);
+        float boilAmplitude = lineBoilAmplitude * len * thickFactor;
+        float boilSpeed = lineBoilSpeed * thickFactor;
         float boilOffset = sinf(time * boilSpeed + phase) * boilAmplitude;
 
         Vector2 cppos = Vector2Add(center, Vector2Scale(perp, boilOffset));
@@ -176,8 +181,8 @@ void DrawPlant(const Plant& plant) {
         DrawSplineSegmentBezierQuadratic(base, cppos, tip, segmentCapsule.radius*2, p.color);
 
         // DEBUG
-        DrawCircleLines(base.x, base.y, segmentCapsule.radius, RED);
-        DrawCircleLines(tip.x, tip.y, segmentCapsule.radius, ORANGE);
+        //DrawCircleLines(base.x, base.y, segmentCapsule.radius, RED);
+        //DrawCircleLines(tip.x, tip.y, segmentCapsule.radius, ORANGE);
     }
 }
 
@@ -253,8 +258,11 @@ int main() {
 
     //SetConfigFlags(FLAG_VSYNC_HINT);
     InitWindow(screenWidth, screenHeight, "2D Climbing Plant Growth (Raylib)");
-    SetTargetFPS(30);
+    SetTargetFPS(120);
     float fixedDeltaTime = 1.0f/60;
+
+    Camera2D camera = { 0 };
+    camera.zoom = 1.0f;
 
 	// 128 pixels per meter is a appropriate for this scene.
 	const float lengthUnitsPerMeter = 64.0f;
@@ -271,14 +279,39 @@ int main() {
     b2BodyId selectedBodyId = b2_nullBodyId;
     b2JointId mouseJointId = b2_nullJointId;
 
+    
+    //float boilAmplitudeValue = 0.5f;
+    //float boilSpeedValue = 2.0f;
+    //float boilThicknessScaling = 0.5f;
+    //float baseOffsetValue = 0.0f;
+    //float phaseScalingValue = 2.0f;
 
     while (!WindowShouldClose()) {
-
-        // Handle Input
         WindowFunctions(screenWidth, screenHeight);
 
+        // Draw the sliders and update their values
+        //GuiSliderBar({ 100, 60, 300, 20 }, TextFormat("boilAmplitude:%0.2f", boilAmplitudeValue), NULL, &boilAmplitudeValue, 0.0f, 5.0f);
+        //GuiSliderBar({ 100, 90, 300, 20 },  TextFormat("boilSpeed:%0.2f", boilSpeedValue), NULL, &boilSpeedValue, 0.0f, 10.0f);
+        //GuiSliderBar({ 100, 120, 300, 20 }, TextFormat("boilThicknessScaling:%0.2f", boilThicknessScaling), NULL, &boilThicknessScaling, 0.0f, 1.0f);
+        //GuiSliderBar({ 100, 150, 300, 20 }, TextFormat("baseOffsetValue:%0.2f", baseOffsetValue), NULL, &baseOffsetValue, -1.0f, 1.0f);
+        //GuiSliderBar({ 100, 180, 300, 20 }, TextFormat("phaseScaling:%0.2f", phaseScalingValue), NULL, &phaseScalingValue, 0.0f, 10.0f);
+
+        // Handle Mouse Input
+        Vector2 ssMousePos = GetMousePosition();
+        DrawText(TextFormat("Mouse: (%0.1f,%0.1f)" ,ssMousePos.x, ssMousePos.y), 30, 30, 20, DARKGRAY);
+        Vector2 mousePos = GetScreenToWorld2D(ssMousePos, camera);
+        DrawText(TextFormat("World: (%0.1f,%0.1f)" ,mousePos.x, mousePos.y), 30, 50, 20, DARKGRAY);
+
+        // CAMERA NAVIGATION
+        float cameraSpeed = 500 * GetFrameTime(); // Pixels per second
+        float edgeThreshold = 30.0f; // Distance from edge to start moving camera
+
+        if (ssMousePos.x < edgeThreshold) camera.target.x -= cameraSpeed;
+        if (ssMousePos.x > screenWidth - edgeThreshold) camera.target.x += cameraSpeed;
+        if (ssMousePos.y < edgeThreshold) camera.target.y -= cameraSpeed;
+        if (ssMousePos.y > screenHeight - edgeThreshold) camera.target.y += cameraSpeed;
+
         // DRAGGING PLANTS
-        Vector2 mousePos = GetMousePosition();
         b2Vec2 mp = b2Vec2{ mousePos.x, mousePos.y };
 
         // Start dragging
@@ -318,16 +351,24 @@ int main() {
 
         // PLANTING SEEDS
         if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) && plants.size() < MAX_PLANTS) {
-            Vector2 mouse = GetMousePosition();
             Plant plant;
-            plant.size = GetRandomValue(10, 45);
-            plant.primaryColor = GREEN;
-            plant.secondaryColor = Color{0, 255, 234, 150};
+            plant.size = GetRandomValue(5, 100);
+            plant.primaryColor = Color{static_cast<unsigned char>(GetRandomValue(0, 255)),
+                static_cast<unsigned char>(GetRandomValue(0, 255)),
+                static_cast<unsigned char>(GetRandomValue(0, 255)),
+                255};
+            plant.secondaryColor = Color{static_cast<unsigned char>(GetRandomValue(0, 255)),
+                static_cast<unsigned char>(GetRandomValue(0, 255)),
+                static_cast<unsigned char>(GetRandomValue(0, 255)),
+                255};
+            plant.branchingAngle = RandomFloat(0.1f, PI/2);
+            plant.branchAngleVariance = RandomFloat(0.05f, 0.2f);
+            plant.tipAngleVariance = RandomFloat(0.05f, 0.3f);
             Particle seed = CreateParticle(worldId,
-                mouse,
-                -PI/2,
-                40,
-                10,
+                mousePos,
+                RandomFloat(-PI/2.1, -PI/1.9),
+                RandomFloat(10,40),
+                RandomFloat(2,20),
                 plant.primaryColor, // Start with plant’s base color
                 -1,
                 nullptr,
@@ -347,18 +388,23 @@ int main() {
 
         // Physics Update
         float deltaTime = GetFrameTime();
-        b2World_Step(worldId, fixedDeltaTime, 5);
+        b2World_Step(worldId, fixedDeltaTime, 10);
 
 
         // DRAW
         ClearBackground(BLACK);
         BeginDrawing();
 
-        for (const Plant& plant : plants) {
-            DrawPlant(plant);
-        }
-        DrawText("Click to plant a seed", 10, 10, 20, DARKGRAY);
+        BeginMode2D(camera);
 
+
+        for (const Plant& plant : plants) {
+            DrawPlant(plant);//, boilAmplitudeValue, boilSpeedValue, boilThicknessScaling, baseOffsetValue, phaseScalingValue);
+        }
+
+        EndMode2D();
+
+        DrawText("Right-Click to plant a seed!", 10, 10, 10, DARKGRAY);
         DrawFPS(screenWidth-100, 10);
 
         EndDrawing();
