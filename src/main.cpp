@@ -15,7 +15,7 @@
 #define MAX_PARTICLES 1000
 
 struct Particle {
-    b2BodyId bodyId; // Box2D body
+    b2BodyId bodyId = b2_nullBodyId; // Box2D body
     float length;
     float thickness;
     Color color;
@@ -24,11 +24,29 @@ struct Particle {
     int level;
 };
 
+enum PlantStage {
+    SEEDLING = 10,
+    JUVENILE = 30,
+    MATURE = 60,
+    FLOWERING = 70,
+    FRUITING = 80,
+    DECAY
+};
+
+struct GrowthStageModifiers {
+    float tipGrowthRateMultiplier;
+    float branchProbabilityMultiplier;
+    float tipAngleVarianceMultiplier;
+    float lengthMultiplier;
+    float thicknessMultiplier;
+};
+
 struct Plant {
     std::vector<Particle> particles;
     Color primaryColor;
     Color secondaryColor;
-    int size;
+    int maxSize;
+    int age;
     
     // Growth parameters
     float tipAngleVariance = 0.15f; // radians
@@ -36,6 +54,51 @@ struct Plant {
     float branchAngleVariance = 0.05f;
     float branchProbability = 0.33f;
 };
+
+void DeletePlant(Plant& plant) {
+    for (auto& particle : plant.particles) {
+        if (b2Body_IsValid(particle.bodyId)) {
+            b2DestroyBody(particle.bodyId);
+            particle.bodyId = b2_nullBodyId;
+        }
+    }
+    plant.particles.clear();
+}
+
+static PlantStage GetPlantStage(Plant& plant) {
+    PlantStage res = PlantStage::DECAY;
+    int age = plant.age;
+    
+    if (age<=PlantStage::SEEDLING) {
+        res = PlantStage::SEEDLING;
+    } else if (age<=PlantStage::JUVENILE) {
+        res = PlantStage::JUVENILE;
+    } else if (age<=PlantStage::MATURE) {
+        res = PlantStage::MATURE;
+    } else if (age<=PlantStage::FLOWERING) {
+        res = PlantStage::FLOWERING;
+    } else if (age<=PlantStage::FRUITING) {
+        res = PlantStage::FRUITING;
+    }
+
+    return res;
+}
+
+GrowthStageModifiers GetGrowthModifiers(PlantStage stage) {
+    switch (stage) {
+        case SEEDLING:
+            return { 1.5f, 0.5f, 0.7f, 1.2f, 0.9f }; // Taller, fewer branches, straighter
+        case JUVENILE:
+            return { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f }; // Baseline growth
+        case MATURE:
+            return { 0.8f, 1.5f, 1.2f, 0.9f, 0.9f }; // Slower tips, more branching
+        case FLOWERING:
+        case FRUITING:
+            return { 0.0f, 0.0f, 0.0f, 1.0f, 1.0f }; // Growth stops, future: flowers/fruits
+        default:
+            return { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+    }
+}
 
 Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float length, float thickness, Color color, int parentIndex, const Particle* parent, bool isGrowingTip) {
     b2BodyDef bd = b2DefaultBodyDef();
@@ -94,8 +157,13 @@ Vector2 RotateVector(Vector2 v, float angle) {
 void GrowPlant(Plant& plant, b2WorldId worldId) {
     std::vector<Particle> newParticles;
 
+    plant.age++;
+    auto stage = GetPlantStage(plant);
+    if (stage == PlantStage::DECAY) return;
+    auto modifiers = GetGrowthModifiers(stage);
+
     for (size_t i = 0; i < plant.particles.size(); i++) {
-        if (plant.particles.size() + newParticles.size() >= (size_t)plant.size) return; 
+        if (plant.particles.size() + newParticles.size() >= (size_t)plant.maxSize) return; 
         Particle& p = plant.particles[i];
         if (!p.isGrowingTip) continue;
         
@@ -126,7 +194,7 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
 
         // Random lateral branch
         if (RandomFloat(0.0f, 1.0f) < plant.branchProbability) {
-            float branchAngle = (GetRandomValue(0, 1) ? 1 : -1)*plant.branchingAngle + RandomFloat(-plant.branchAngleVariance, plant.branchAngleVariance);
+            float branchAngle = (p.level%2 ? 1 : -1)*plant.branchingAngle + RandomFloat(-plant.branchAngleVariance, plant.branchAngleVariance);
             Particle branch = CreateParticle(worldId,
                 parentPos,
                 branchAngle,
@@ -157,7 +225,7 @@ void DrawPlant(const Plant& plant, float lineBoilAmplitude=0.25, float lineBoilS
         b2ShapeId shapes[1];
         b2Body_GetShapes(p.bodyId, shapes, 1);
         b2Capsule segmentCapsule = b2Shape_GetCapsule(shapes[0]);
-        Vector2 base = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center1-b2Vec2{baseOffset*p.length,0}));
+        Vector2 base = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center1));//-b2Vec2{baseOffset*p.length,0}));
         Vector2 tip = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center2));
 
         // Use hash-based pseudo-random phase from particle index
@@ -179,10 +247,8 @@ void DrawPlant(const Plant& plant, float lineBoilAmplitude=0.25, float lineBoilS
 
         //DrawSplineSegmentBezierQuadratic(startpos, cppos, endpos, segmentCapsule.radius, p.color);
         DrawSplineSegmentBezierQuadratic(base, cppos, tip, segmentCapsule.radius*2, p.color);
-
-        // DEBUG
-        //DrawCircleLines(base.x, base.y, segmentCapsule.radius, RED);
-        //DrawCircleLines(tip.x, tip.y, segmentCapsule.radius, ORANGE);
+        DrawCircle(base.x, base.y, segmentCapsule.radius*.9, p.color);
+        DrawCircle(tip.x, tip.y, segmentCapsule.radius*.9, p.color);
     }
 }
 
@@ -265,7 +331,7 @@ int main() {
     camera.zoom = 1.0f;
 
 	// 128 pixels per meter is a appropriate for this scene.
-	const float lengthUnitsPerMeter = 64.0f;
+	const float lengthUnitsPerMeter = 64.0f*2;
 	b2SetLengthUnitsPerMeter(lengthUnitsPerMeter);
 
 	b2WorldDef worldDef = b2DefaultWorldDef();
@@ -314,6 +380,14 @@ int main() {
         // DRAGGING PLANTS
         b2Vec2 mp = b2Vec2{ mousePos.x, mousePos.y };
 
+        if (!b2Joint_IsValid(mouseJointId)) {
+            mouseJointId = b2_nullJointId;
+            selectedBodyId = b2_nullBodyId;
+        } else if (B2_IS_NULL(mouseJointId) || B2_IS_NULL(selectedBodyId)) {
+            b2DestroyJoint(mouseJointId);
+            mouseJointId = b2_nullJointId;
+            selectedBodyId = b2_nullBodyId;
+        }
         // Start dragging
         if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
             b2BodyId bodyUnderCursor = GetBodyAtPoint(worldId, mousePos);
@@ -333,7 +407,7 @@ int main() {
 			    mouseJointDef.maxForce = 1000.0f * b2Body_GetMass(selectedBodyId) * b2Length(b2World_GetGravity(worldId));
                 mouseJointId = b2CreateMouseJoint(worldId, &mouseJointDef);
             }
-        } else if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON) || !b2Joint_IsValid(mouseJointId)) {
+        } else if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
             // Stop dragging
             if B2_IS_NON_NULL(mouseJointId) {
                 b2DestroyJoint(mouseJointId);
@@ -343,7 +417,7 @@ int main() {
         }
 
         // Dragging
-        if B2_IS_NON_NULL(mouseJointId) {
+        if (B2_IS_NON_NULL(mouseJointId)) {
             std::cout << "dragging(" << b2StoreBodyId(selectedBodyId) << "): [" << mousePos.x << ", " << mousePos.y << "]\n";
             b2MouseJoint_SetTarget(mouseJointId, mp);
 		    b2Body_SetAwake( selectedBodyId, true );
@@ -352,7 +426,7 @@ int main() {
         // PLANTING SEEDS
         if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) && plants.size() < MAX_PLANTS) {
             Plant plant;
-            plant.size = GetRandomValue(5, 100);
+            plant.maxSize = GetRandomValue(5, 100);
             plant.primaryColor = Color{static_cast<unsigned char>(GetRandomValue(0, 255)),
                 static_cast<unsigned char>(GetRandomValue(0, 255)),
                 static_cast<unsigned char>(GetRandomValue(0, 255)),
@@ -375,6 +449,15 @@ int main() {
                 true);
             plant.particles.push_back(seed);
             plants.push_back(plant);
+        }
+
+        // DELETING PLANTS
+        if (IsKeyPressed(KEY_R) && plants.size() > 0)
+        {
+            for (Plant& plant : plants) {
+                DeletePlant(plant);
+            }
+            plants.clear();
         }
         
         // Update
