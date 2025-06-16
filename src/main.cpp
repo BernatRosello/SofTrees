@@ -14,13 +14,21 @@
 #define MAX_PLANTS 100
 #define MAX_PARTICLES 1000
 
+enum ParticleType {
+    NON_GROWING_TIP,
+    GROWING_TIP,
+    BRANCH,
+    FLOWER,
+    FRUIT,
+};
+
 struct Particle {
     b2BodyId bodyId = b2_nullBodyId; // Box2D body
     float length;
     float thickness;
     Color color;
     int parentIndex;
-    bool isGrowingTip;
+    ParticleType type;
     int level;
 };
 
@@ -137,7 +145,7 @@ Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float lengt
         thickness,
         color,
         parentIndex,
-        isGrowingTip,
+        ParticleType::GROWING_TIP,
         level
     };
 
@@ -165,7 +173,7 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
     for (size_t i = 0; i < plant.particles.size(); i++) {
         if (plant.particles.size() + newParticles.size() >= (size_t)plant.maxSize) return; 
         Particle& p = plant.particles[i];
-        if (!p.isGrowingTip) continue;
+        if (p.type != ParticleType::GROWING_TIP) continue;
         
         float lerpStep = 0.5f*1/p.thickness; // How much to move toward secondary color
         Color newColor = ColorLerp(p.color, plant.secondaryColor, lerpStep);
@@ -190,7 +198,7 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
             true);
 
         newParticles.push_back(newParticle);
-        p.isGrowingTip = false;
+        p.type = ParticleType::BRANCH;
 
         // Random lateral branch
         if (RandomFloat(0.0f, 1.0f) < plant.branchProbability) {
@@ -369,8 +377,8 @@ int main() {
         DrawText(TextFormat("World: (%0.1f,%0.1f)" ,mousePos.x, mousePos.y), 30, 50, 20, DARKGRAY);
 
         // CAMERA NAVIGATION
-        float cameraSpeed = 500 * GetFrameTime(); // Pixels per second
-        float edgeThreshold = 30.0f; // Distance from edge to start moving camera
+        float cameraSpeed = 250 * GetFrameTime(); // Pixels per second
+        float edgeThreshold = 15.0f; // Distance from edge to start moving camera
 
         if (ssMousePos.x < edgeThreshold) camera.target.x -= cameraSpeed;
         if (ssMousePos.x > screenWidth - edgeThreshold) camera.target.x += cameraSpeed;
