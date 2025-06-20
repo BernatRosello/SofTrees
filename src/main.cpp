@@ -4,261 +4,17 @@
 #include "raygui.h"
 #include "box2d/box2d.h"
 
-#include <vector>
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
+#include <string>
 
 #include "b2_utils.h"
-#include <iostream>
+#include "plants.h"
+#include "random.h"
 
 #define MAX_PLANTS 100
 #define MAX_PARTICLES 1000
-
-enum ParticleType {
-    NON_GROWING_TIP,
-    GROWING_TIP,
-    BRANCH,
-    FLOWER,
-    FRUIT,
-};
-
-struct Particle {
-    b2BodyId bodyId = b2_nullBodyId; // Box2D body
-    float length;
-    float thickness;
-    Color color;
-    int parentIndex;
-    ParticleType type;
-    int level;
-};
-
-enum PlantStage {
-    SEEDLING = 10,
-    JUVENILE = 30,
-    MATURE = 60,
-    FLOWERING = 70,
-    FRUITING = 80,
-    DECAY
-};
-
-struct GrowthStageModifiers {
-    float tipGrowthRateMultiplier;
-    float branchProbabilityMultiplier;
-    float tipAngleVarianceMultiplier;
-    float lengthMultiplier;
-    float thicknessMultiplier;
-};
-
-struct Plant {
-    std::vector<Particle> particles;
-    Color primaryColor;
-    Color secondaryColor;
-    int maxSize;
-    int age;
-    
-    // Growth parameters
-    float tipAngleVariance = 0.15f; // radians
-    float branchingAngle = 0.6f;
-    float branchAngleVariance = 0.05f;
-    float branchProbability = 0.33f;
-};
-
-void DeletePlant(Plant& plant) {
-    for (auto& particle : plant.particles) {
-        if (b2Body_IsValid(particle.bodyId)) {
-            b2DestroyBody(particle.bodyId);
-            particle.bodyId = b2_nullBodyId;
-        }
-    }
-    plant.particles.clear();
-}
-
-static PlantStage GetPlantStage(Plant& plant) {
-    PlantStage res = PlantStage::DECAY;
-    int age = plant.age;
-    
-    if (age<=PlantStage::SEEDLING) {
-        res = PlantStage::SEEDLING;
-    } else if (age<=PlantStage::JUVENILE) {
-        res = PlantStage::JUVENILE;
-    } else if (age<=PlantStage::MATURE) {
-        res = PlantStage::MATURE;
-    } else if (age<=PlantStage::FLOWERING) {
-        res = PlantStage::FLOWERING;
-    } else if (age<=PlantStage::FRUITING) {
-        res = PlantStage::FRUITING;
-    }
-
-    return res;
-}
-
-GrowthStageModifiers GetGrowthModifiers(PlantStage stage) {
-    switch (stage) {
-        case SEEDLING:
-            return { 1.5f, 0.5f, 0.7f, 1.2f, 0.9f }; // Taller, fewer branches, straighter
-        case JUVENILE:
-            return { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f }; // Baseline growth
-        case MATURE:
-            return { 0.8f, 1.5f, 1.2f, 0.9f, 0.9f }; // Slower tips, more branching
-        case FLOWERING:
-        case FRUITING:
-            return { 0.0f, 0.0f, 0.0f, 1.0f, 1.0f }; // Growth stops, future: flowers/fruits
-        default:
-            return { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
-    }
-}
-
-Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float length, float thickness, Color color, int parentIndex, const Particle* parent, bool isGrowingTip) {
-    b2BodyDef bd = b2DefaultBodyDef();
-    b2ShapeDef shapeDef = b2DefaultShapeDef();
-
-    bd.type = (parentIndex != -1) ? b2_dynamicBody : b2_staticBody;    // or dynamicBody if you want physics interaction
-    bd.position = b2Vec2{pos.x, pos.y};
-    bd.rotation = b2MakeRot(-PI/2);
-
-    b2Capsule capsule = {b2Vec2{0, 0}, b2Vec2{length,0}, thickness/2};
-
-    // Create a box fixture representing the anisotropic segment (capsule approx)
-    b2BodyId bodyId = b2CreateBody(worldId, &bd);
-    b2CreateCapsuleShape(bodyId, &shapeDef, &capsule);
-
-    if (parentIndex != -1)
-    {
-        b2RevoluteJointDef jointDef = b2DefaultRevoluteJointDef();
-        jointDef.bodyIdA = parent->bodyId;
-        jointDef.bodyIdB = bodyId;
-        jointDef.localAnchorA = {parent->length,0};
-        jointDef.localAnchorB = {0,0};
-        jointDef.targetAngle = angle;
-        jointDef.enableSpring = true;
-        jointDef.hertz = length * 2 + thickness * 10;
-        jointDef.dampingRatio = 0;//0.15f;
-        jointDef.collideConnected = false;
-        b2CreateRevoluteJoint(worldId, &jointDef);
-    }
-
-    int level = (parentIndex != -1) ? parent->level + 1 : 0;
-
-    Particle p = {
-        bodyId,
-        length,
-        thickness,
-        color,
-        parentIndex,
-        ParticleType::GROWING_TIP,
-        level
-    };
-
-    return p;
-}
-
-float RandomFloat(float min, float max) {
-    return min + static_cast<float>(rand()) / (static_cast<float>(RAND_MAX / (max - min)));
-}
-
-Vector2 RotateVector(Vector2 v, float angle) {
-    float cs = cosf(angle);
-    float sn = sinf(angle);
-    return { v.x * cs - v.y * sn, v.x * sn + v.y * cs };
-}
-
-void GrowPlant(Plant& plant, b2WorldId worldId) {
-    std::vector<Particle> newParticles;
-
-    plant.age++;
-    auto stage = GetPlantStage(plant);
-    if (stage == PlantStage::DECAY) return;
-    auto modifiers = GetGrowthModifiers(stage);
-
-    for (size_t i = 0; i < plant.particles.size(); i++) {
-        if (plant.particles.size() + newParticles.size() >= (size_t)plant.maxSize) return; 
-        Particle& p = plant.particles[i];
-        if (p.type != ParticleType::GROWING_TIP) continue;
-        
-        float lerpStep = 0.5f*1/p.thickness; // How much to move toward secondary color
-        Color newColor = ColorLerp(p.color, plant.secondaryColor, lerpStep);
-
-        float parentAngle = b2Rot_GetAngle(b2Body_GetRotation(p.bodyId));
-        b2ShapeId shapes[1];
-        b2Body_GetShapes(p.bodyId, shapes, 1);
-        b2Capsule segmentCapsule = b2Shape_GetCapsule(shapes[0]);
-        Vector2 parentPos = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center1));
-        Vector2 newPos = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center2));
-
-        // Update current tip
-        float tipAngle = RandomFloat(-plant.tipAngleVariance, plant.tipAngleVariance);
-        Particle newParticle = CreateParticle(worldId,
-            newPos,
-            tipAngle,
-            p.length * RandomFloat(0.9f, 1.1f), 
-            p.thickness * RandomFloat(0.85f,0.99f), 
-            newColor, 
-            (int)i,
-            &p,
-            true);
-
-        newParticles.push_back(newParticle);
-        p.type = ParticleType::BRANCH;
-
-        // Random lateral branch
-        if (RandomFloat(0.0f, 1.0f) < plant.branchProbability) {
-            float branchAngle = (p.level%2 ? 1 : -1)*plant.branchingAngle + RandomFloat(-plant.branchAngleVariance, plant.branchAngleVariance);
-            Particle branch = CreateParticle(worldId,
-                parentPos,
-                branchAngle,
-                p.length * RandomFloat(0.9f, 1.1f),
-                p.thickness * RandomFloat(0.75f,0.9f),
-                newColor,
-                (int)i,
-                &p,
-                true);
-            newParticles.push_back(branch);
-        }
-    }
-
-    plant.particles.insert(plant.particles.end(), newParticles.begin(), newParticles.end());
-}
-
-float HashFloat(int seed) {
-    // Simple hash to float in [0, 1]
-    seed = (seed << 13) ^ seed;
-    return (1.0f - ((seed * (seed * seed * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f);
-}
-
-void DrawPlant(const Plant& plant, float lineBoilAmplitude=0.25, float lineBoilSpeed=2, float boilThicknessFactor=0.6, float baseOffset=0.05, float phaseScaling=0.667) {
-    double time = GetTime();
-
-    for (size_t i = 0; i < plant.particles.size(); i++) {
-        const Particle& p = plant.particles[i];
-        b2ShapeId shapes[1];
-        b2Body_GetShapes(p.bodyId, shapes, 1);
-        b2Capsule segmentCapsule = b2Shape_GetCapsule(shapes[0]);
-        Vector2 base = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center1));//-b2Vec2{baseOffset*p.length,0}));
-        Vector2 tip = rayVec2(b2Body_GetWorldPoint(p.bodyId, segmentCapsule.center2));
-
-        // Use hash-based pseudo-random phase from particle index
-        double phase = (p.level) * PI/phaseScaling + HashFloat(b2StoreBodyId(plant.particles[0].bodyId))/4;
-
-        //Vector2 startpos = Vector2Lerp(base, tip, sinf(time * 5 + phase + 1) * 0.1f - 0.1f);
-        //Vector2 endpos = Vector2Lerp(base, tip, sinf(time * 5 + phase) * 0.1f + 0.9f);
-
-        Vector2 center = Vector2Lerp(base, tip, 0.5f);
-        float len = Vector2Length(Vector2Subtract(base, tip));
-        Vector2 perp = {(base.y - tip.y) / len, -(base.x - tip.x) / len};
-
-        float thickFactor = Clamp((plant.particles[0].thickness-p.thickness)/(boilThicknessFactor*plant.particles[0].thickness), 0, 1);
-        float boilAmplitude = lineBoilAmplitude * len * thickFactor;
-        float boilSpeed = lineBoilSpeed * thickFactor;
-        float boilOffset = sinf(time * boilSpeed + phase) * boilAmplitude;
-
-        Vector2 cppos = Vector2Add(center, Vector2Scale(perp, boilOffset));
-
-        //DrawSplineSegmentBezierQuadratic(startpos, cppos, endpos, segmentCapsule.radius, p.color);
-        DrawSplineSegmentBezierQuadratic(base, cppos, tip, segmentCapsule.radius*2, p.color);
-        DrawCircle(base.x, base.y, segmentCapsule.radius*.9, p.color);
-        DrawCircle(tip.x, tip.y, segmentCapsule.radius*.9, p.color);
-    }
-}
 
 void WindowFunctions(int screenWidth, int screenHeight)
 {
@@ -284,48 +40,59 @@ void WindowFunctions(int screenWidth, int screenHeight)
     }
 }
 
-struct CastResult
-{
-	b2Vec2 point;
-	b2Vec2 normal;
-	b2BodyId bodyId;
-	float fraction;
-	bool hit;
-};
-
-static float CastCallback( b2ShapeId shapeId, b2Vec2 point, b2Vec2 normal, float fraction, void* context )
-{
-	CastResult* result = (CastResult*)context;
-	result->point = point;
-	result->normal = normal;
-	result->bodyId = b2Shape_GetBody( shapeId );
-	result->fraction = fraction;
-	result->hit = true;
-	return fraction;
-}
-
-b2BodyId GetBodyAtPoint(b2WorldId worldId, Vector2 point) {
-    float queryRadius = 10.0f;
-
-    b2QueryFilter filter = b2DefaultQueryFilter();
-    b2ShapeProxy inputShapeProxy = {{point.x, point.y}, 1, queryRadius};
-    CastResult castResult = {};
-    b2World_CastShape(worldId, &inputShapeProxy, {0,0}, filter, CastCallback, &castResult);
-    
-    if (castResult.hit)
-    {
-        return castResult.bodyId;
+void DrawPlantInfoBox(const Plant& plant, Vector2 mousePos) {
+    PlantStage stage = GetPlantStage((Plant&)plant);
+    const char* stageName = "Unknown";
+    switch (stage) {
+        case PlantStage::SEEDLING: stageName = "Seedling"; break;
+        case PlantStage::JUVENILE: stageName = "Juvenile"; break;
+        case PlantStage::MATURE: stageName = "Mature"; break;
+        case PlantStage::FLOWERING: stageName = "Flowering"; break;
+        case PlantStage::FRUITING: stageName = "Fruiting"; break;
+        case PlantStage::DECAY: stageName = "Decay"; break;
     }
-    else
-    {
-        return b2_nullBodyId;
-    }
+
+    // Build plant info text
+    std::string infoText = TextFormat(" \\
+        Stage:%s\n \\
+        Age:%d\n \\
+        Max Size:%d\n \\
+        Tip Angle Var:%0.2f\n \\
+        Branching Angle:%0.2f\n \\
+        Branch Angle Var:%0.2f\n \\
+        Branch Probability:%0.2f\n \\
+        Secondary Growth Rate:%0.2f\n",
+        stageName,
+        plant.age,
+        plant.maxSize,
+        plant.tipAngleVariance,
+        plant.branchingAngle,
+        plant.branchAngleVariance,
+        plant.branchProbability,
+        plant.secondaryGrowthRate
+        );
+
+    // Calculate box size
+    Vector2 boxSize = { 210, 150 }; // Adjust based on your text amount
+    Rectangle infoBox = { mousePos.x + 10, mousePos.y + 10, boxSize.x, boxSize.y };
+
+    // Keep on screen
+    if (infoBox.x + infoBox.width > GetScreenWidth()) infoBox.x -= (infoBox.width + 20);
+    if (infoBox.y + infoBox.height > GetScreenHeight()) infoBox.y -= (infoBox.height + 20);
+
+    auto linePadding = GuiGetStyle(DEFAULT, TEXT_LINE_SPACING);
+    GuiSetStyle(DEFAULT, TEXT_LINE_SPACING, 14);
+    // Draw using raygui
+    GuiPanel(infoBox, "Plant Info");
+    GuiLabel({infoBox.x, infoBox.y + 40, infoBox.width, infoBox.height - 40}, infoText.c_str());
+    GuiSetStyle(DEFAULT, TEXT_LINE_SPACING, linePadding);
 }
 
 int main() {
     std::vector<Plant> plants;
     int tick = 0;
-    const int GROWTH_TICK_RATE = 5;
+    //const int GROWTH_TICK_RATE = 10;
+    float growthTickRate = 10;
 
     int screenWidth = 1200;
     int screenHeight = 675;
@@ -359,6 +126,9 @@ int main() {
     //float boilThicknessScaling = 0.5f;
     //float baseOffsetValue = 0.0f;
     //float phaseScalingValue = 2.0f;
+    float deformationThreshold = 4 * DEG2RAD;
+    float resistanceThreshold = 8 * DEG2RAD;
+    float yieldThreshold = 25 * DEG2RAD;
 
     while (!WindowShouldClose()) {
         WindowFunctions(screenWidth, screenHeight);
@@ -369,6 +139,16 @@ int main() {
         //GuiSliderBar({ 100, 120, 300, 20 }, TextFormat("boilThicknessScaling:%0.2f", boilThicknessScaling), NULL, &boilThicknessScaling, 0.0f, 1.0f);
         //GuiSliderBar({ 100, 150, 300, 20 }, TextFormat("baseOffsetValue:%0.2f", baseOffsetValue), NULL, &baseOffsetValue, -1.0f, 1.0f);
         //GuiSliderBar({ 100, 180, 300, 20 }, TextFormat("phaseScaling:%0.2f", phaseScalingValue), NULL, &phaseScalingValue, 0.0f, 10.0f);
+        GuiSliderBar({ 100, 120, 300, 20 }, TextFormat("deformationThreshold:%0.2f", deformationThreshold * RAD2DEG), NULL, &deformationThreshold, 0.0f, PI);
+        GuiSliderBar({ 100, 150, 300, 20 }, TextFormat("resistanceThreshold:%0.2f", resistanceThreshold * RAD2DEG), NULL, &resistanceThreshold, 0.0f, PI);
+        GuiSliderBar({ 100, 180, 300, 20 }, TextFormat("yieldThreshold:%0.2f", yieldThreshold * RAD2DEG), NULL, &yieldThreshold, 0.0f, PI);
+        GuiSliderBar({ 100, 210, 300, 20 }, TextFormat("growthTickRate:%d", (int)growthTickRate), NULL, &growthTickRate, 1.0f, 120.0f);
+        for (auto p : plants) 
+        {
+            p.deformationThreshold = deformationThreshold;
+            p.resistanceThreshold = resistanceThreshold;
+            p.yieldThreshold = yieldThreshold;
+        }
 
         // Handle Mouse Input
         Vector2 ssMousePos = GetMousePosition();
@@ -409,10 +189,10 @@ int main() {
                 mouseJointDef.bodyIdA = m_groundBodyId;
                 mouseJointDef.bodyIdB = selectedBodyId;
                 mouseJointDef.target = mp;
-                mouseJointDef.hertz = 7.5f;
-                mouseJointDef.dampingRatio = 0.7f;
+                mouseJointDef.hertz = 10.0f;
+                mouseJointDef.dampingRatio = 1.0f;
                 mouseJointDef.collideConnected = true;
-			    mouseJointDef.maxForce = 1000.0f * b2Body_GetMass(selectedBodyId) * b2Length(b2World_GetGravity(worldId));
+			    mouseJointDef.maxForce = 100000.0f * b2Body_GetMass(selectedBodyId) * std::max(b2Length(b2World_GetGravity(worldId)), 1.0f);
                 mouseJointId = b2CreateMouseJoint(worldId, &mouseJointDef);
             }
         } else if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
@@ -427,14 +207,14 @@ int main() {
         // Dragging
         if (B2_IS_NON_NULL(mouseJointId)) {
             std::cout << "dragging(" << b2StoreBodyId(selectedBodyId) << "): [" << mousePos.x << ", " << mousePos.y << "]\n";
-            b2MouseJoint_SetTarget(mouseJointId, mp);
 		    b2Body_SetAwake( selectedBodyId, true );
+            b2MouseJoint_SetTarget(mouseJointId, mp);
         }
 
         // PLANTING SEEDS
         if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) && plants.size() < MAX_PLANTS) {
             Plant plant;
-            plant.maxSize = GetRandomValue(5, 100);
+            plant.maxSize = GetRandomValue(5, 250);
             plant.primaryColor = Color{static_cast<unsigned char>(GetRandomValue(0, 255)),
                 static_cast<unsigned char>(GetRandomValue(0, 255)),
                 static_cast<unsigned char>(GetRandomValue(0, 255)),
@@ -443,18 +223,19 @@ int main() {
                 static_cast<unsigned char>(GetRandomValue(0, 255)),
                 static_cast<unsigned char>(GetRandomValue(0, 255)),
                 255};
-            plant.branchingAngle = RandomFloat(0.1f, PI/2);
-            plant.branchAngleVariance = RandomFloat(0.05f, 0.2f);
-            plant.tipAngleVariance = RandomFloat(0.05f, 0.3f);
+            plant.branchingAngle = RandomFloatRange(0.1f, PI/2);
+            plant.branchAngleVariance = RandomFloatRange(0.05f, 0.2f);
+            plant.tipAngleVariance = RandomFloatRange(0.05f, 0.3f);
             Particle seed = CreateParticle(worldId,
                 mousePos,
-                RandomFloat(-PI/2.1, -PI/1.9),
-                RandomFloat(10,40),
-                RandomFloat(2,20),
+                RandomFloatRange(-PI/2.1, -PI/1.9),
+                RandomFloatRange(10,40),
+                RandomFloatRange(2,20),
                 plant.primaryColor, // Start with plant’s base color
                 -1,
                 nullptr,
-                true);
+                ParticleType::GROWING_TIP);
+                
             plant.particles.push_back(seed);
             plants.push_back(plant);
         }
@@ -470,7 +251,7 @@ int main() {
         
         // Update
         tick++;
-        if (tick % GROWTH_TICK_RATE == 0)
+        if (tick % (int)growthTickRate == 0)
         {
             for (Plant& plant : plants) {
                 GrowPlant(plant, worldId);
@@ -491,6 +272,14 @@ int main() {
 
         for (const Plant& plant : plants) {
             DrawPlant(plant);//, boilAmplitudeValue, boilSpeedValue, boilThicknessScaling, baseOffsetValue, phaseScalingValue);
+        }
+        
+
+        // Plant Info
+        Plant* hoveredPlant = GetPlantAtPoint(plants, worldId, mousePos);
+
+        if (hoveredPlant != nullptr) {
+            DrawPlantInfoBox(*hoveredPlant, mousePos);
         }
 
         EndMode2D();
