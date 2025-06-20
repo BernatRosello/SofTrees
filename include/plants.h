@@ -100,7 +100,7 @@ Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float lengt
 float GetTropismAngle(Plant& plant, float referenceAngle, Vector2 worldPos, b2WorldId worldId);
 void DrawPlant(const Plant& plant, float lineBoilAmplitude=0.25, float lineBoilSpeed=2, float boilThicknessFactor=0.6, float baseOffset=0.05, float phaseScaling=0.667);
 void GrowPlant(Plant &plant, b2WorldId worldId);
-float GetDeformationReactionValue(float deformationtAngle, Plant& p);
+float GetDeformationReactionFactor(float deformationtAngle, Plant& p);
 void DeletePlant(Plant& plant);
 
 

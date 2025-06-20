@@ -42,8 +42,8 @@ Particle CreateParticle(b2WorldId worldId, Vector2 pos, float angle, float lengt
         jointDef.localAnchorB = {0,0};
         jointDef.targetAngle = angle;
         jointDef.enableSpring = true;
-        jointDef.hertz = length/4 * thickness*1.5f  + 20;
-        jointDef.dampingRatio = 0.995f;
+        jointDef.hertz = length/2 * thickness  + 20;
+        jointDef.dampingRatio = 0.9f;
         jointDef.collideConnected = false;
         b2CreateRevoluteJoint(worldId, &jointDef);
     }
@@ -148,14 +148,16 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
                         //if (abs(currentAngle) > PI/2) currentAngle = Lerp(prevTargetAngle, currentAngle, 0.2f); 
                         //float newTargetAngle = Lerp(prevTargetAngle, currentAngle, abs(currentAngle-prevTargetAngle)>(1-modifiers.secondaryGrowthRateMultiplier) ? 1 : 0 * modifiers.secondaryGrowthRateMultiplier);
 
-                        float newTargetAngle = Lerp(prevTargetAngle, currentAngle, 0.33f * GetDeformationReactionValue(currentAngle, plant) * plant.secondaryGrowthRate);
+                        auto fac = GetDeformationReactionFactor(currentAngle, plant);
+                        auto sign = fac >= 0 ? 1 : -1;
+                        float newTargetAngle = Lerp(prevTargetAngle, sign*currentAngle, abs(fac));
                         
                         b2RevoluteJoint_SetTargetAngle(jointId, newTargetAngle);
 
-                        float currentStiffness = b2RevoluteJoint_GetSpringHertz(jointId);
+                        //float currentStiffness = b2RevoluteJoint_GetSpringHertz(jointId);
                         // Derivative of what would be 'p.thickness^2 / 5'  i think?
-                        float newStiffness = std::min(currentStiffness + 2 * plant.secondaryGrowthRate / 20, 20000.0f);
-                        b2RevoluteJoint_SetSpringHertz(jointId, newStiffness);
+                        //float newStiffness = std::min(currentStiffness + 2 * plant.secondaryGrowthRate / 20, 20000.0f);
+                        //b2RevoluteJoint_SetSpringHertz(jointId, newStiffness);
                     }
                 }
             }
@@ -216,19 +218,22 @@ void GrowPlant(Plant& plant, b2WorldId worldId) {
     plant.particles.insert(plant.particles.end(), newParticles.begin(), newParticles.end());
 }
 
-float GetDeformationReactionValue(float deformationAngle, Plant& p)
+float GetDeformationReactionFactor(float deformationAngle, Plant& p)
 {
     float da = abs(deformationAngle);
-    const float dir = deformationAngle < 0 ? -1 : 1;
+    const float dir = deformationAngle >= 0 ? 1 : -1;
     if (da < p.deformationThreshold)
         return 0;
-    else if (da < p.resistanceThreshold)
-        return -da/(p.resistanceThreshold-p.deformationThreshold);
-    else if (da < p.yieldThreshold)
-        //return 0;
-        return (da-p.resistanceThreshold)/(p.yieldThreshold-p.resistanceThreshold)*2 - 1 ;
     else
-        return 1;
+        //return (da/PI)*2 - 1;
+        return -1.0f;//* p.secondaryGrowthRate * 0.5f;
+    //else if (da < p.resistanceThreshold)
+    //    return -da/(p.resistanceThreshold-p.deformationThreshold);
+    //else if (da < p.yieldThreshold)
+    //    //return 0;
+    //    return (da-p.resistanceThreshold)/(p.yieldThreshold-p.resistanceThreshold)*2 - 1 ;
+    //else
+    //    return 1;
 }
 
 void DrawPlant(const Plant& plant, float lineBoilAmplitude, float lineBoilSpeed, float boilThicknessFactor, float baseOffset, float phaseScaling) {
