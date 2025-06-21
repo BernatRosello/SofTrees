@@ -1,39 +1,32 @@
 cmake_minimum_required(VERSION 3.5)
-# project name and version
 project(SofTrees)
 
-# C++ minimum version  required
 set(CMAKE_CXX_STANDARD 17)
-# Let the language server know stuff about the project and libraries
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-#Glob finds all files in a directory, src/ in this case, and assign to the SRC_FILES variable
 file(GLOB SRC_FILES ${PROJECT_SOURCE_DIR}/src/*.cpp)
-# Creates the executable with the source files
 add_executable(SofTrees ${SRC_FILES})
-# Sets the include directory
+
 target_include_directories(SofTrees PRIVATE ${PROJECT_SOURCE_DIR}/include)
 
-# Include the command that downloads libraries
 include(FetchContent)
 
 # ================ 
 # ==== RAYLIB ==== 
 # ================ 
 set(RAYLIB_VERSION 5.5)
-find_package(raylib ${RAYLIB_VERSION} QUIET) # QUIET or REQUIRED
-if (NOT raylib_FOUND) # If there's none, fetch and build raylib
-  include(FetchContent)
+find_package(raylib ${RAYLIB_VERSION} QUIET)
+if (NOT raylib_FOUND)
   FetchContent_Declare(
     raylib
     DOWNLOAD_EXTRACT_TIMESTAMP OFF
     URL https://github.com/raysan5/raylib/archive/refs/tags/${RAYLIB_VERSION}.tar.gz
   )
   FetchContent_GetProperties(raylib)
-  if (NOT raylib_POPULATED) # Have we downloaded raylib yet?
+  if (NOT raylib_POPULATED)
     set(FETCHCONTENT_QUIET NO)
     FetchContent_MakeAvailable(raylib)
-    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE) # don't build the supplied examples
+    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   endif()
 endif()
 
@@ -60,8 +53,21 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(box2d)
 
-# To use raygui copy the header raygui.h into the raylib dependency source folder (kind of jank, but works)
-# https://github.com/raysan5/raygui/blob/master/src/raygui.h
+# ================= 
+# ==== RAYGUI ==== 
+# ================= 
+# Download raygui.h directly into the raylib source folder
+set(RAYGUI_HEADER_URL "https://raw.githubusercontent.com/raysan5/raygui/master/src/raygui.h")
+set(RAYGUI_HEADER_DEST "${raylib_SOURCE_DIR}/src/raygui.h")
+
+# Add a custom command to download the file if it doesn't exist
+if (NOT EXISTS ${RAYGUI_HEADER_DEST})
+    message(STATUS "Downloading raygui.h into raylib source directory")
+    file(DOWNLOAD ${RAYGUI_HEADER_URL} ${RAYGUI_HEADER_DEST} SHOW_PROGRESS)
+endif()
+
+# Add raylib's src folder to the include directories (so raygui.h is found)
+target_include_directories(SofTrees PRIVATE ${raylib_SOURCE_DIR}/src)
 
 # Link all libraries to the project
 target_link_libraries(SofTrees PRIVATE raylib raylib_cpp box2d)
