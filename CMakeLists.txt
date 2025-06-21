@@ -20,13 +20,22 @@ include(FetchContent)
 # ================ 
 # ==== RAYLIB ==== 
 # ================ 
-message(STATUS "Getting raylib from Github")
-FetchContent_Declare(
-  raylib
-  GIT_REPOSITORY https://github.com/raysan5/raylib.git
-  GIT_TAG 5.5
-)
-FetchContent_MakeAvailable(raylib)
+set(RAYLIB_VERSION 5.5)
+find_package(raylib ${RAYLIB_VERSION} QUIET) # QUIET or REQUIRED
+if (NOT raylib_FOUND) # If there's none, fetch and build raylib
+  include(FetchContent)
+  FetchContent_Declare(
+    raylib
+    DOWNLOAD_EXTRACT_TIMESTAMP OFF
+    URL https://github.com/raysan5/raylib/archive/refs/tags/${RAYLIB_VERSION}.tar.gz
+  )
+  FetchContent_GetProperties(raylib)
+  if (NOT raylib_POPULATED) # Have we downloaded raylib yet?
+    set(FETCHCONTENT_QUIET NO)
+    FetchContent_MakeAvailable(raylib)
+    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE) # don't build the supplied examples
+  endif()
+endif()
 
 # ==================== 
 # ==== RAYLIB_CPP ==== 
@@ -50,6 +59,9 @@ FetchContent_Declare(
 	GIT_PROGRESS TRUE
 )
 FetchContent_MakeAvailable(box2d)
+
+# To use raygui copy the header raygui.h into the raylib dependency source folder (kind of jank, but works)
+# https://github.com/raysan5/raygui/blob/master/src/raygui.h
 
 # Link all libraries to the project
 target_link_libraries(SofTrees PRIVATE raylib raylib_cpp box2d)
